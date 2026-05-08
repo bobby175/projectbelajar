@@ -107,15 +107,33 @@ def login_required(f):
 # ══════════════════════════════════════════════
 @app.errorhandler(500)
 def internal_error(e):
-    return render_template("error.html", kode=500,
-        pesan="Terjadi kesalahan pada server.",
-        detail=str(e)), 500
+    # Pakai HTML inline — tidak bergantung pada file template
+    # sehingga tidak bisa crash lagi meski templates/ bermasalah
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>body{{background:#0f0f14;color:#e0e0e0;font-family:Arial,sans-serif;
+text-align:center;padding:60px 20px}}.code{{font-size:64px;font-weight:700;
+color:#3a3a4a}}.msg{{color:#f08080;margin:12px 0}}.det{{font-size:12px;
+color:#555;font-family:monospace}}.btn{{display:inline-block;margin-top:20px;
+padding:9px 20px;background:#1f538d;color:#fff;text-decoration:none;
+border-radius:6px}}</style></head><body>
+<div class="code">500</div>
+<p class="msg">Terjadi kesalahan pada server.</p>
+<p class="det">{str(e)}</p>
+<a href="/" class="btn">Kembali ke Login</a>
+</body></html>""", 500
 
 @app.errorhandler(404)
 def not_found(e):
-    return render_template("error.html", kode=404,
-        pesan="Halaman tidak ditemukan.",
-        detail=str(e)), 404
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>body{{background:#0f0f14;color:#e0e0e0;font-family:Arial,sans-serif;
+text-align:center;padding:60px 20px}}.code{{font-size:64px;font-weight:700;
+color:#3a3a4a}}.msg{{color:#a0a0b0;margin:12px 0}}.btn{{display:inline-block;
+margin-top:20px;padding:9px 20px;background:#1f538d;color:#fff;
+text-decoration:none;border-radius:6px}}</style></head><body>
+<div class="code">404</div>
+<p class="msg">Halaman tidak ditemukan.</p>
+<a href="/" class="btn">Kembali ke Login</a>
+</body></html>""", 404
 
 
 # ══════════════════════════════════════════════
