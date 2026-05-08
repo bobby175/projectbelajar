@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--bg2:#111827;--bg3:#1a2235;--bg4:#1e2a3d;
+  --card:#151e30;--border:#2a3a55;--border2:#3a4f70;
+  --accent:#00d4aa;--accent2:#0099ff;--accent3:#7c5cff;
+  --warn:#f59e0b;--danger:#ef4444;--success:#10b981;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --font:'JetBrains Mono',monospace;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;min-height:100vh}
+
+/* ---- LOGIN ---- */
+#login-screen{min-height:100vh;display:flex;align-items:center;justify-content:center}
+.login-box{background:var(--card);border:0.5px solid var(--border2);border-radius:16px;padding:2rem 2.5rem;width:360px}
+.login-logo{display:flex;align-items:center;gap:10px;margin-bottom:1.8rem;justify-content:center}
+.logo-chip{width:36px;height:36px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center}
+.logo-chip i{color:var(--bg);font-size:18px}
+.logo-text span{font-size:18px;font-weight:700;display:block}
+.logo-text small{color:var(--accent);font-size:11px}
+.field-label{font-size:11px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em}
+.field-wrap{margin-bottom:1rem}
+.field-wrap input{width:100%;background:var(--bg3);border:0.5px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-family:var(--font);font-size:13px;outline:none;transition:border-color .2s}
+.field-wrap input:focus{border-color:var(--accent)}
+.login-btn{width:100%;background:var(--accent);color:var(--bg);border:none;border-radius:8px;padding:11px;font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;transition:opacity .2s;margin-top:.5rem}
+.login-btn:hover{opacity:.85}
+.login-btn:disabled{opacity:.5;cursor:not-allowed}
+.err-msg{color:var(--danger);font-size:11px;margin-top:8px;text-align:center;min-height:16px}
+.login-hint{font-size:11px;color:var(--text3);text-align:center;margin-top:1rem}
+
+/* ---- APP ---- */
+#main-app{display:none}
+.topbar{background:var(--card);border-bottom:0.5px solid var(--border);padding:0 1.5rem;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar-logo{display:flex;align-items:center;gap:8px}
+.topbar-logo .chip{width:26px;height:26px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center}
+.topbar-logo .chip i{color:var(--bg);font-size:13px}
+.topbar-logo span{font-size:14px;font-weight:700}
+.topbar-right{display:flex;align-items:center;gap:.8rem}
+.conn-badge{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text2);padding:4px 10px;background:var(--bg3);border:0.5px solid var(--border);border-radius:20px}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--success);animation:pulse 2s infinite}
+.conn-dot.offline{background:var(--danger);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.logout-btn{background:none;border:0.5px solid var(--border);color:var(--text3);font-family:var(--font);font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer}
+.logout-btn:hover{border-color:var(--danger);color:var(--danger)}
+
+.layout{display:flex;min-height:calc(100vh - 52px)}
+.sidebar{width:200px;background:var(--card);border-right:0.5px solid var(--border);padding:1rem 0;flex-shrink:0}
+.nav-section{font-size:10px;color:var(--text3);padding:1rem 1rem .4rem;text-transform:uppercase;letter-spacing:.1em}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 1rem;font-size:12px;color:var(--text2);cursor:pointer;border-left:2px solid transparent;transition:all .15s}
+.nav-item:hover{color:var(--text);background:var(--bg3)}
+.nav-item.active{color:var(--accent);border-left-color:var(--accent);background:rgba(0,212,170,.06)}
+.nav-item i{font-size:15px;width:18px;text-align:center}
+
+.content{flex:1;padding:1.5rem;overflow-y:auto}
+.page{display:none}
+.page.active{display:block}
+.page-header{margin-bottom:1.5rem}
+.page-header h1{font-size:16px;font-weight:700}
+.page-header p{font-size:12px;color:var(--text3);margin-top:4px}
+
+/* ---- STATS ---- */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:1.5rem}
+.stat-card{background:var(--card);border:0.5px solid var(--border);border-radius:12px;padding:1rem}
+.stat-card.t{border-color:rgba(0,212,170,.3);background:rgba(0,212,170,.04)}
+.stat-card.b{border-color:rgba(0,153,255,.3);background:rgba(0,153,255,.04)}
+.stat-card.w{border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.04)}
+.stat-card.p{border-color:rgba(124,92,255,.3);background:rgba(124,92,255,.04)}
+.stat-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.stat-val{font-size:22px;font-weight:700}
+.stat-sub{font-size:11px;color:var(--text2);margin-top:2px}
+
+/* ---- DEVICE CARDS ---- */
+.device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:1.5rem}
+.device-card{background:var(--card);border:0.5px solid var(--border);border-radius:12px;padding:1rem;border-left:3px solid var(--text3);transition:border-color .2s}
+.device-card.online{border-left-color:var(--success)}
+.device-card.warning{border-left-color:var(--warn)}
+.device-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.device-icon{width:34px;height:34px;border-radius:8px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:16px}
+.status-badge{font-size:10px;padding:3px 8px;border-radius:10px;font-weight:600}
+.status-badge.online{background:rgba(16,185,129,.15);color:var(--success)}
+.status-badge.offline{background:rgba(100,116,139,.15);color:var(--text3)}
+.device-name{font-size:13px;font-weight:600}
+.device-meta{font-size:11px;color:var(--text3);margin-top:2px}
+.metrics{display:flex;gap:8px;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)}
+.metric{flex:1;text-align:center}
+.metric .val{font-size:14px;font-weight:600}
+.metric .key{font-size:10px;color:var(--text3)}
+
+.section-title{font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.1em;margin-bottom:1rem}
+
+/* ---- CONTROL ---- */
+.ctrl-panel{background:var(--card);border:0.5px solid var(--border);border-radius:12px;padding:1.2rem;margin-bottom:1rem}
+.ctrl-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem}
+.toggle{width:36px;height:20px;background:var(--bg3);border-radius:10px;cursor:pointer;position:relative;border:0.5px solid var(--border);transition:background .2s;flex-shrink:0}
+.toggle.on{background:var(--accent)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .2s}
+.toggle.on::after{transform:translateX(16px)}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--border)}
+.toggle-row:last-child{border-bottom:none}
+.toggle-label{display:flex;align-items:center;gap:8px;font-size:12px}
+
+/* ---- LOGS ---- */
+.log-wrap{background:var(--card);border:0.5px solid var(--border);border-radius:12px;padding:.5rem 1rem}
+.log-row{display:flex;gap:10px;padding:6px 0;border-bottom:0.5px solid var(--border);font-size:11px}
+.log-row:last-child{border-bottom:none}
+.log-time{color:var(--text3);width:65px;flex-shrink:0}
+.log-dev{color:var(--accent);width:80px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-msg{color:var(--text2);flex:1}
+.log-lvl{font-size:10px;padding:1px 6px;border-radius:4px;flex-shrink:0}
+.log-lvl.ok{background:rgba(16,185,129,.15);color:var(--success)}
+.log-lvl.info{background:rgba(0,153,255,.15);color:var(--accent2)}
+.log-lvl.warn{background:rgba(245,158,11,.15);color:var(--warn)}
+.log-lvl.error{background:rgba(239,68,68,.15);color:var(--danger)}
+
+/* ---- MODAL ---- */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:var(--bg2);border:0.5px solid var(--border2);border-radius:16px;padding:1.5rem;width:380px}
+.modal-title{font-size:15px;font-weight:700;margin-bottom:1.2rem;display:flex;align-items:center;justify-content:space-between}
+.modal-close{background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px;line-height:1}
+.form-row{margin-bottom:1rem}
+.form-label{font-size:11px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.07em}
+.form-input{width:100%;background:var(--bg3);border:0.5px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-family:var(--font);font-size:13px;outline:none}
+.form-input:focus{border-color:var(--accent)}
+.type-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.type-opt{border:0.5px solid var(--border);border-radius:8px;padding:10px 8px;text-align:center;cursor:pointer;font-size:11px;color:var(--text2);transition:all .15s}
+.type-opt:hover{border-color:var(--border2)}
+.type-opt.sel{border-color:var(--accent);color:var(--accent);background:rgba(0,212,170,.06)}
+.type-opt .icon{font-size:18px;margin-bottom:4px}
+.modal-footer{display:flex;gap:8px;margin-top:1.2rem}
+.btn-primary{flex:1;background:var(--accent);color:var(--bg);border:none;border-radius:8px;padding:10px;font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;transition:opacity .2s}
+.btn-primary:hover{opacity:.85}
+.btn-secondary{background:none;border:0.5px solid var(--border);color:var(--text2);border-radius:8px;padding:10px 16px;font-family:var(--font);font-size:13px;cursor:pointer}
+.add-btn{display:flex;align-items:center;gap:8px;background:none;border:0.5px dashed var(--border2);color:var(--text3);border-radius:12px;padding:1rem;cursor:pointer;font-family:var(--font);font-size:12px;width:100%;justify-content:center;transition:all .2s}
+.add-btn:hover{border-color:var(--accent);color:var(--accent)}
+.del-btn{background:none;border:0.5px solid var(--border);color:var(--text3);border-radius:6px;padding:3px 8px;font-size:11px;font-family:var(--font);cursor:pointer}
+.del-btn:hover{border-color:var(--danger);color:var(--danger)}
+
+/* ---- SETTINGS ---- */
+.settings-panel{background:var(--card);border:0.5px solid var(--border);border-radius:12px;padding:1.2rem;margin-bottom:1rem}
+.settings-panel h3{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:1rem}
+.settings-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid var(--border)}
+.settings-row:last-child{border-bottom:none}
+.settings-key{font-size:12px;display:flex;align-items:center;gap:8px}
+.settings-val{font-size:12px;color:var(--text2)}
+
+.loading{display:inline-block;width:12px;height:12px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="logo-chip"><i class="ti ti-cpu"></i></div>
+      <div class="logo-text"><span>ESP32 HUB</span><small>IoT Control Center</small></div>
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Username</div>
+      <input type="text" id="inp-user" placeholder="admin" autocomplete="username">
+    </div>
+    <div class="field-wrap">
+      <div class="field-label">Password</div>
+      <input type="password" id="inp-pass" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div class="err-msg" id="login-err"></div>
+    <button class="login-btn" id="login-btn" onclick="doLogin()">SIGN IN</button>
+    <p class="login-hint">Hubungkan ke FastAPI backend Anda</p>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="main-app">
+  <div class="topbar">
+    <div class="topbar-left">
+      <div class="topbar-logo">
+        <div class="chip"><i class="ti ti-cpu"></i></div>
+        <span>ESP32 HUB</span>
+      </div>
+      <span style="color:var(--text3);font-size:11px">/</span>
+      <span id="breadcrumb" style="color:var(--text2);font-size:12px">Dashboard</span>
+    </div>
+    <div class="topbar-right">
+      <div class="conn-badge">
+        <div class="conn-dot" id="ws-dot"></div>
+        <span id="ws-label">Connecting...</span>
+      </div>
+      <span style="font-size:12px;color:var(--text2)" id="topbar-user"></span>
+      <button class="logout-btn" onclick="doLogout()"><i class="ti ti-logout" style="font-size:12px"></i> Logout</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <div class="nav-section">Menu</div>
+      <div class="nav-item active" onclick="showPage('dashboard',this)"><i class="ti ti-layout-dashboard"></i>Dashboard</div>
+      <div class="nav-item" onclick="showPage('devices',this)"><i class="ti ti-cpu"></i>Devices</div>
+      <div class="nav-item" onclick="showPage('control',this)"><i class="ti ti-adjustments"></i>Control</div>
+      <div class="nav-item" onclick="showPage('logs',this)"><i class="ti ti-terminal"></i>Logs</div>
+      <div class="nav-section">Sistem</div>
+      <div class="nav-item" onclick="showPage('settings',this)"><i class="ti ti-settings"></i>Settings</div>
+    </div>
+
+    <div class="content">
+      <!-- DASHBOARD -->
+      <div class="page active" id="page-dashboard">
+        <div class="page-header">
+          <h1>Dashboard</h1>
+          <p id="last-update">Belum ada data</p>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card t"><div class="stat-label">Total Devices</div><div class="stat-val" id="s-total">—</div><div class="stat-sub">terdaftar</div></div>
+          <div class="stat-card b"><div class="stat-label">Online</div><div class="stat-val" id="s-online" style="color:var(--success)">—</div><div class="stat-sub">aktif</div></div>
+          <div class="stat-card w"><div class="stat-label">Offline</div><div class="stat-val" id="s-offline" style="color:var(--text3)">—</div><div class="stat-sub">tidak merespons</div></div>
+          <div class="stat-card p"><div class="stat-label">Avg Temp</div><div class="stat-val" id="s-temp">—</div><div class="stat-sub">semua sensor</div></div>
+        </div>
+        <div class="section-title">Device aktif</div>
+        <div class="device-grid" id="dash-devices"></div>
+        <div class="section-title">Log terbaru</div>
+        <div class="log-wrap" id="dash-logs"><div style="color:var(--text3);font-size:12px;padding:8px 0">Belum ada log</div></div>
+      </div>
+
+      <!-- DEVICES -->
+      <div class="page" id="page-devices">
+        <div class="page-header"><h1>Device Manager</h1><p>Semua perangkat IoT yang terhubung</p></div>
+        <div class="device-grid" id="all-devices"></div>
+        <button class="add-btn" onclick="openAddModal()"><i class="ti ti-plus" style="font-size:16px"></i> Tambah Device</button>
+      </div>
+
+      <!-- CONTROL -->
+      <div class="page" id="page-control">
+        <div class="page-header"><h1>Control Panel</h1><p>Kontrol GPIO dan output setiap device</p></div>
+        <div id="ctrl-panels"></div>
+      </div>
+
+      <!-- LOGS -->
+      <div class="page" id="page-logs">
+        <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+          <div><h1>System Logs</h1><p>Aktivitas real-time dari semua perangkat</p></div>
+          <button class="btn-secondary" style="font-size:11px;padding:6px 12px" onclick="logs=[];renderLogs()"><i class="ti ti-trash" style="font-size:12px"></i> Clear</button>
+        </div>
+        <div class="log-wrap" id="full-logs"></div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div class="page" id="page-settings">
+        <div class="page-header"><h1>Settings</h1><p>Konfigurasi koneksi dan akun</p></div>
+        <div class="settings-panel">
+          <h3>API Backend</h3>
+          <div class="settings-row"><span class="settings-key"><i class="ti ti-server" style="color:var(--accent2)"></i>Base URL</span><span class="settings-val" id="set-url"></span></div>
+          <div class="settings-row"><span class="settings-key"><i class="ti ti-plug" style="color:var(--success)"></i>WebSocket</span><span class="settings-val" id="set-ws">—</span></div>
+          <div class="settings-row"><span class="settings-key"><i class="ti ti-refresh" style="color:var(--accent3)"></i>Poll interval</span><span class="settings-val">5 detik</span></div>
+        </div>
+        <div class="settings-panel">
+          <h3>Akun</h3>
+          <div class="settings-row"><span class="settings-key"><i class="ti ti-user"></i>Username</span><span class="settings-val" id="set-user"></span></div>
+          <div class="settings-row"><span class="settings-key"><i class="ti ti-shield" style="color:var(--success)"></i>Role</span><span style="background:rgba(16,185,129,.15);color:var(--success);font-size:11px;padding:2px 8px;border-radius:10px">Administrator</span></div>
+        </div>
+        <div class="settings-panel">
+          <h3>Server URL</h3>
+          <div class="form-row" style="margin:0">
+            <input type="text" class="form-input" id="server-url-input" placeholder="https://your-backend.railway.app">
+            <button class="btn-primary" style="margin-top:8px;width:100%;padding:8px" onclick="changeServer()">Simpan &amp; Reconnect</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Tambah Device -->
+<div class="modal-bg" id="modal-add">
+  <div class="modal">
+    <div class="modal-title"><span>Tambah Device</span><button class="modal-close" onclick="closeModal()">&times;</button></div>
+    <div class="form-row"><div class="form-label">Device ID (unik)</div><input type="text" class="form-input" id="m-id" placeholder="esp32-002"></div>
+    <div class="form-row"><div class="form-label">Nama Device</div><input type="text" class="form-input" id="m-name" placeholder="Kamar - Sensor Suhu"></div>
+    <div class="form-row">
+      <div class="form-label">Tipe</div>
+      <div class="type-grid">
+        <div class="type-opt sel" data-t="sensor" onclick="selType(this)"><div class="icon"><i class="ti ti-temperature" style="color:var(--accent2)"></i></div>Sensor</div>
+        <div class="type-opt" data-t="relay" onclick="selType(this)"><div class="icon"><i class="ti ti-bolt" style="color:var(--warn)"></i></div>Relay</div>
+        <div class="type-opt" data-t="servo" onclick="selType(this)"><div class="icon"><i class="ti ti-rotate" style="color:var(--accent3)"></i></div>Servo</div>
+        <div class="type-opt" data-t="display" onclick="selType(this)"><div class="icon"><i class="ti ti-device-desktop" style="color:var(--accent)"></i></div>Display</div>
+        <div class="type-opt" data-t="motor" onclick="selType(this)"><div class="icon"><i class="ti ti-engine" style="color:var(--success)"></i></div>Motor</div>
+        <div class="type-opt" data-t="custom" onclick="selType(this)"><div class="icon"><i class="ti ti-puzzle" style="color:var(--text2)"></i></div>Custom</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal()">Batal</button>
+      <button class="btn-primary" onclick="addDeviceLocal()">Tambah Device</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG - Ganti BASE_URL dengan URL backend Anda
+// ============================================================
+let BASE_URL = localStorage.getItem('esp32_server') || 'http://localhost:8000';
+// ============================================================
+
+let token = '';
+let username = '';
+let devices = {};
+let logs = [];
+let ws = null;
+let selTypeVal = 'sensor';
+let pollInterval = null;
+
+const typeIcons = {sensor:'ti-temperature',relay:'ti-bolt',servo:'ti-rotate',display:'ti-device-desktop',motor:'ti-engine',custom:'ti-puzzle'};
+const typeColors = {sensor:'#0099ff',relay:'#f59e0b',servo:'#7c5cff',display:'#00d4aa',motor:'#10b981',custom:'#94a3b8'};
+
+// ---- AUTH ----
+async function doLogin() {
+  const u = document.getElementById('inp-user').value.trim();
+  const p = document.getElementById('inp-pass').value;
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-err');
+  
+  err.textContent = '';
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loading"></span> Connecting...';
+
+  try {
+    const res = await fetch(`${BASE_URL}/api/login`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({username: u, password: p})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Login gagal');
+    
+    token = data.token;
+    username = data.username;
+    localStorage.setItem('esp32_token', token);
+    localStorage.setItem('esp32_user', username);
+    
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('main-app').style.display = 'block';
+    document.getElementById('topbar-user').textContent = username;
+    document.getElementById('set-user').textContent = username;
+    document.getElementById('set-url').textContent = BASE_URL;
+    document.getElementById('server-url-input').value = BASE_URL;
+
+    startApp();
+    addLog('System', 'Login berhasil: ' + username, 'ok');
+  } catch(e) {
+    err.textContent = '⚠ ' + e.message;
+  }
+  btn.disabled = false;
+  btn.textContent = 'SIGN IN';
+}
+
+document.getElementById('inp-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+document.getElementById('inp-user').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+async function doLogout() {
+  try { await apiFetch('/api/logout', {method:'POST'}); } catch(e) {}
+  token = ''; username = '';
+  localStorage.removeItem('esp32_token');
+  localStorage.removeItem('esp32_user');
+  if(ws) ws.close();
+  clearInterval(pollInterval);
+  devices = {};
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('inp-pass').value = '';
+}
+
+// ---- API ----
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(BASE_URL + path, {
+    ...opts,
+    headers: {'Content-Type':'application/json','Authorization':'Bearer '+token, ...(opts.headers||{})},
+    body: opts.body ? JSON.stringify(opts.body) : undefined
+  });
+  if (!res.ok) { const d = await res.json(); throw new Error(d.detail || res.statusText); }
+  return res.json();
+}
+
+// ---- WEBSOCKET ----
+function connectWS() {
+  const wsUrl = BASE_URL.replace('https://','wss://').replace('http://','ws://') + '/ws?token=' + token;
+  document.getElementById('set-ws').textContent = wsUrl;
+  
+  try {
+    ws = new WebSocket(wsUrl);
+    
+    ws.onopen = () => {
+      setWsStatus(true);
+      addLog('System', 'WebSocket terhubung ke server', 'ok');
+    };
+    
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'init') {
+        msg.devices.forEach(d => { if(d.device_id) devices[d.device_id] = d; });
+      } else if (msg.type === 'sensor' || msg.type === 'status') {
+        const d = msg.data;
+        const id = msg.device_id;
+        devices[id] = {...devices[id]||{}, ...d, device_id: id, online: true, last_seen: msg.timestamp};
+        addLog(id, msg.type === 'sensor' ? `T:${d.temp}°C H:${d.humidity}%` : 'Status update', 'info');
+      }
+      renderAll();
+    };
+    
+    ws.onerror = () => setWsStatus(false);
+    ws.onclose = () => {
+      setWsStatus(false);
+      addLog('System', 'WebSocket terputus, retry 5s...', 'warn');
+      setTimeout(connectWS, 5000);
+    };
+  } catch(e) {
+    setWsStatus(false);
+  }
+}
+
+function setWsStatus(ok) {
+  const dot = document.getElementById('ws-dot');
+  const lbl = document.getElementById('ws-label');
+  dot.className = 'conn-dot' + (ok ? '' : ' offline');
+  lbl.textContent = ok ? 'Connected' : 'Disconnected';
+}
+
+// ---- POLL DATA ----
+async function fetchDevices() {
+  try {
+    const list = await apiFetch('/api/devices');
+    list.forEach(d => { if(d.device_id) devices[d.device_id] = d; });
+    const stats = await apiFetch('/api/stats');
+    updateStats(stats);
+    renderAll();
+    document.getElementById('last-update').textContent = 'Update: ' + new Date().toLocaleTimeString('id-ID');
+  } catch(e) { addLog('System', 'Poll error: ' + e.message, 'error'); }
+}
+
+function startApp() {
+  fetchDevices();
+  connectWS();
+  pollInterval = setInterval(fetchDevices, 5000);
+}
+
+// ---- RENDER ----
+function updateStats(s) {
+  document.getElementById('s-total').textContent = s.total;
+  document.getElementById('s-online').textContent = s.online;
+  document.getElementById('s-offline').textContent = s.offline;
+  document.getElementById('s-temp').textContent = s.avg_temp ? s.avg_temp + '°C' : '—';
+}
+
+function renderAll() {
+  renderDeviceGrid('dash-devices', Object.values(devices).slice(0,6), false);
+  renderDeviceGrid('all-devices', Object.values(devices), true);
+  const cp = document.getElementById('page-control');
+  if(cp.classList.contains('active')) renderControl();
+}
+
+function renderDeviceGrid(id, list, showDel) {
+  const el = document.getElementById(id);
+  if (!list.length) { el.innerHTML = '<p style="color:var(--text3);font-size:12px">Tidak ada device. Tambahkan device baru.</p>'; return; }
+  el.innerHTML = list.map(d => {
+    const icon = typeIcons[d.type] || 'ti-cpu';
+    const col = typeColors[d.type] || '#94a3b8';
+    const st = d.online ? 'online' : 'offline';
+    return `<div class="device-card ${st}">
+      <div class="device-card-head">
+        <div class="device-icon"><i class="ti ${icon}" style="color:${col}"></i></div>
+        <span class="status-badge ${st}">${st.toUpperCase()}</span>
+      </div>
+      <div class="device-name">${d.name || d.device_id}</div>
+      <div class="device-meta">${(d.device_id||'') + (d.ip ? ' · '+d.ip : '')}</div>
+      <div class="metrics">
+        <div class="metric"><div class="val">${d.temp != null ? d.temp+'°' : '—'}</div><div class="key">Temp</div></div>
+        <div class="metric"><div class="val">${d.humidity != null ? d.humidity+'%' : '—'}</div><div class="key">Humid</div></div>
+        <div class="metric"><div class="val">${d.uptime != null ? formatUptime(d.uptime) : '—'}</div><div class="key">Uptime</div></div>
+      </div>
+      ${showDel ? `<div style="margin-top:10px;padding-top:8px;border-top:0.5px solid var(--border)"><button class="del-btn" onclick="removeDevice('${d.device_id||''}')"><i class="ti ti-trash" style="font-size:11px"></i> Hapus</button></div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function formatUptime(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm';
+  return Math.floor(s/3600) + 'h';
+}
+
+function renderControl() {
+  const el = document.getElementById('ctrl-panels');
+  const list = Object.values(devices);
+  if (!list.length) { el.innerHTML = '<p style="color:var(--text3);font-size:12px">Tidak ada device</p>'; return; }
+  el.innerHTML = list.map(d => {
+    const icon = typeIcons[d.type] || 'ti-cpu';
+    const col = typeColors[d.type] || '#94a3b8';
+    const id = d.device_id || '';
+    const r1 = d.relay1 ? 'on' : '';
+    const r2 = d.relay2 ? 'on' : '';
+    return `<div class="ctrl-panel">
+      <div class="ctrl-head">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="device-icon"><i class="ti ${icon}" style="color:${col}"></i></div>
+          <div><div style="font-size:13px;font-weight:600">${d.name || id}</div><div style="font-size:11px;color:var(--text3)">${id}</div></div>
+        </div>
+        <span class="status-badge ${d.online?'online':'offline'}">${d.online?'ONLINE':'OFFLINE'}</span>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label"><i class="ti ti-bolt" style="color:var(--warn)"></i> Relay 1</span>
+        <div class="toggle ${r1}" id="rl1-${id}" onclick="toggleRelay('${id}',1,this)"></div>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label"><i class="ti ti-bolt" style="color:var(--warn)"></i> Relay 2</span>
+        <div class="toggle ${r2}" id="rl2-${id}" onclick="toggleRelay('${id}',2,this)"></div>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label"><i class="ti ti-refresh" style="color:var(--accent2)"></i> Restart Device</span>
+        <button class="del-btn" onclick="sendCmd('${id}','restart')"><i class="ti ti-refresh" style="font-size:11px"></i> Restart</button>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text3)">
+        Sensor: <span style="color:var(--accent)">${d.online ? (d.temp||'—')+'°C / '+(d.humidity||'—')+'% RH' : 'offline'}</span>
+        &nbsp;·&nbsp; RSSI: <span style="color:var(--accent2)">${d.rssi || '—'} dBm</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function toggleRelay(deviceId, pin, el) {
+  const state = !el.classList.contains('on');
+  try {
+    await apiFetch('/api/command', {method:'POST', body:{device_id:deviceId,action:'set_relay',pin,state}});
+    el.classList.toggle('on', state);
+    if (devices[deviceId]) devices[deviceId]['relay'+pin] = state;
+    addLog(deviceId, `Relay ${pin} → ${state?'ON':'OFF'}`, 'ok');
+  } catch(e) {
+    addLog(deviceId, 'Command error: '+e.message, 'error');
+  }
+}
+
+async function sendCmd(deviceId, action) {
+  try {
+    await apiFetch('/api/command', {method:'POST', body:{device_id:deviceId, action}});
+    addLog(deviceId, 'Command sent: '+action, 'ok');
+  } catch(e) {
+    addLog(deviceId, 'Command error: '+e.message, 'error');
+  }
+}
+
+// ---- DEVICE MANAGEMENT ----
+function openAddModal() { document.getElementById('modal-add').classList.add('open'); }
+function closeModal() { document.getElementById('modal-add').classList.remove('open'); }
+function selType(el) {
+  document.querySelectorAll('.type-opt').forEach(o => o.classList.remove('sel'));
+  el.classList.add('sel');
+  selTypeVal = el.dataset.t;
+}
+
+function addDeviceLocal() {
+  const id = document.getElementById('m-id').value.trim();
+  const name = document.getElementById('m-name').value.trim();
+  if (!id || !name) { alert('Device ID dan nama wajib diisi'); return; }
+  if (devices[id]) { alert('Device ID sudah ada'); return; }
+  devices[id] = {device_id: id, name, type: selTypeVal, online: false, last_seen: null};
+  closeModal();
+  renderAll();
+  addLog(id, 'Device ditambahkan (tunggu ESP32 connect)', 'info');
+}
+
+function removeDevice(id) {
+  if (!confirm(`Hapus device "${devices[id]?.name || id}"?`)) return;
+  delete devices[id];
+  renderAll();
+  addLog(id, 'Device dihapus', 'warn');
+}
+
+// ---- LOGS ----
+function addLog(dev, msg, level='info') {
+  const t = new Date().toLocaleTimeString('id-ID');
+  logs.unshift({time:t, dev, msg, level});
+  if (logs.length > 200) logs.pop();
+  renderLogs();
+}
+
+function renderLogs() {
+  const dash = document.getElementById('dash-logs');
+  const full = document.getElementById('full-logs');
+  if (!logs.length) {
+    dash.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">Belum ada log</div>';
+    full.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">Belum ada log</div>';
+    return;
+  }
+  const html = (list) => list.map(l =>
+    `<div class="log-row"><span class="log-time">${l.time}</span><span class="log-dev">${l.dev}</span><span class="log-msg">${l.msg}</span><span class="log-lvl ${l.level}">${l.level.toUpperCase()}</span></div>`
+  ).join('');
+  dash.innerHTML = html(logs.slice(0,5));
+  full.innerHTML = html(logs);
+}
+
+// ---- NAVIGATION ----
+function showPage(name, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  if (el) el.classList.add('active');
+  document.getElementById('breadcrumb').textContent = name.charAt(0).toUpperCase()+name.slice(1);
+  if (name === 'control') renderControl();
+}
+
+// ---- SETTINGS ----
+function changeServer() {
+  const url = document.getElementById('server-url-input').value.trim().replace(/\/$/, '');
+  if (!url) return;
+  BASE_URL = url;
+  localStorage.setItem('esp32_server', url);
+  if (ws) ws.close();
+  clearInterval(pollInterval);
+  connectWS();
+  pollInterval = setInterval(fetchDevices, 5000);
+  document.getElementById('set-url').textContent = url;
+  addLog('System', 'Server URL diubah: ' + url, 'info');
+}
+
+// ---- AUTO-LOGIN (jika token tersimpan) ----
+window.addEventListener('load', () => {
+  const savedToken = localStorage.getItem('esp32_token');
+  const savedUser = localStorage.getItem('esp32_user');
+  if (savedToken && savedUser) {
+    token = savedToken;
+    username = savedUser;
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('main-app').style.display = 'block';
+    document.getElementById('topbar-user').textContent = username;
+    document.getElementById('set-user').textContent = username;
+    document.getElementById('set-url').textContent = BASE_URL;
+    document.getElementById('server-url-input').value = BASE_URL;
+    startApp();
+  }
+});
+</script>
+</body>
+</html>
