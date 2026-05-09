@@ -298,6 +298,42 @@ async def get_history(device_id: str, limit: int = 100, session=Depends(get_sess
 async def get_gps_history(device_id: str, limit: int = 200, session=Depends(get_session)):
     return list(gps_history.get(device_id, []))[-limit:]
 
+@app.delete("/api/devices/{device_id}")
+async def delete_device(device_id: str, session=Depends(require_admin)):
+    """Hapus device dari backend secara permanen."""
+    if device_id not in devices:
+        raise HTTPException(status_code=404, detail="Device tidak ditemukan")
+    # Hapus semua data device
+    devices.pop(device_id, None)
+    device_pins.pop(device_id, None)
+    sensor_history.pop(device_id, None)
+    gps_history.pop(device_id, None)
+    # Broadcast ke semua dashboard agar device card hilang
+    await broadcast_ws({
+        "type": "device_deleted",
+        "device_id": device_id,
+        "timestamp": datetime.now().isoformat()
+    })
+    print(f"🗑 Device dihapus: {device_id}")
+    return {"message": f"Device '{device_id}' berhasil dihapus"}
+
+@app.patch("/api/devices/{device_id}")
+async def rename_device(device_id: str, body: dict, session=Depends(require_admin)):
+    """Ganti nama device di backend."""
+    if device_id not in devices:
+        raise HTTPException(status_code=404, detail="Device tidak ditemukan")
+    new_name = body.get("name","").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Nama tidak boleh kosong")
+    devices[device_id]["name"] = new_name
+    await broadcast_ws({
+        "type": "device_updated",
+        "device_id": device_id,
+        "data": devices[device_id],
+        "timestamp": datetime.now().isoformat()
+    })
+    return {"message": f"Device diubah namanya menjadi '{new_name}'"}
+
 # ---- Pin Config ----
 @app.get("/api/devices/{device_id}/pins")
 async def get_pins(device_id: str, session=Depends(get_session)):
