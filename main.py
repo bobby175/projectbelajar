@@ -303,28 +303,70 @@ async def get_gps_history(device_id: str, limit: int = 200, session=Depends(get_
 async def get_pins(device_id: str, session=Depends(get_session)):
     return device_pins.get(device_id, [])
 
+def push_pin_config(device_id: str):
+    """Push pin config ke ESP32 via MQTT topic pinconfig."""
+    topic   = f"esp32/{device_id}/pinconfig"
+    payload = json.dumps({"pins": device_pins.get(device_id, [])})
+    result  = mqtt_client.publish(topic, payload)
+    ok = result.rc == mqtt.MQTT_ERR_SUCCESS
+    print(f"{'✅' if ok else '❌'} Push pin config → {topic} ({len(device_pins.get(device_id,[]))} pins)")
+    return ok
+
 @app.put("/api/devices/{device_id}/pins")
 async def update_pins(device_id: str, req: DevicePinsUpdate, session=Depends(require_admin)):
     device_pins[device_id] = [p.dict() for p in req.pins]
-    return {"message": "Pin config diperbarui", "pins": device_pins[device_id]}
+    # Langsung push ke ESP32
+    pushed = push_pin_config(device_id)
+    return {
+        "message": "Pin config diperbarui dan dikirim ke ESP32" if pushed else "Pin config disimpan (ESP32 offline, akan diterima saat reconnect)",
+        "pins": device_pins[device_id],
+        "pushed_to_device": pushed
+    }
 
 @app.post("/api/devices/{device_id}/pins")
 async def add_pin(device_id: str, pin: PinConfig, session=Depends(require_admin)):
     if device_id not in device_pins:
         device_pins[device_id] = []
-    # Cek duplikat pin
     existing = [p for p in device_pins[device_id] if p["pin"] == pin.pin]
     if existing:
         raise HTTPException(status_code=400, detail=f"Pin {pin.pin} sudah ada")
     device_pins[device_id].append(pin.dict())
-    return {"message": f"Pin {pin.pin} ditambahkan"}
+    pushed = push_pin_config(device_id)
+    return {
+        "message": f"Pin {pin.pin} ditambahkan",
+        "pushed_to_device": pushed
+    }
 
 @app.delete("/api/devices/{device_id}/pins/{pin_num}")
 async def delete_pin(device_id: str, pin_num: int, session=Depends(require_admin)):
     if device_id not in device_pins:
         raise HTTPException(status_code=404, detail="Device tidak ditemukan")
     device_pins[device_id] = [p for p in device_pins[device_id] if p["pin"] != pin_num]
-    return {"message": f"Pin {pin_num} dihapus"}
+    pushed = push_pin_config(device_id)
+    return {
+        "message": f"Pin {pin_num} dihapus",
+        "pushed_to_device": pushed
+    }
+
+@app.post("/api/devices/{device_id}/pins/push")
+async def push_pins(device_id: str, session=Depends(require_admin)):
+    """Push ulang pin config ke ESP32 secara manual."""
+    if device_id not in device_pins:
+        raise HTTPException(status_code=404, detail="Belum ada pin config")
+    pushed = push_pin_config(device_id)
+    return {
+        "message": "Pin config dikirim ke ESP32" if pushed else "Gagal kirim (ESP32 mungkin offline)",
+        "pins": device_pins.get(device_id, []),
+        "pushed": pushed
+    }
+
+@app.get("/api/devices/{device_id}/pins/request")
+async def request_pins_from_device(device_id: str, session=Depends(get_session)):
+    """Minta ESP32 kirim balik status pin saat ini."""
+    topic   = f"esp32/{device_id}/command"
+    payload = json.dumps({"action": "get_pins"})
+    mqtt_client.publish(topic, payload)
+    return {"message": "Request dikirim ke ESP32"}
 
 # ---- Command ----
 @app.post("/api/command")
