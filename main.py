@@ -417,7 +417,8 @@ async def security_headers_middleware(request: Request, call_next):
     resp.headers["X-XSS-Protection"]="1; mode=block"
     resp.headers["Referrer-Policy"]="strict-origin-when-cross-origin"
     resp.headers["Cache-Control"]="no-store"
-    resp.headers.pop("Server",None)
+    try: del resp.headers["Server"]
+    except: pass
     return resp
 
 # ============================================================
