@@ -1,5 +1,5 @@
 """
-ESP32 Dashboard - FastAPI Backend v5.0
+ESP32 Dashboard - FastAPI Backend v8.0
 =======================================
 Fitur lengkap:
 - Persistent storage semua device + GPS
@@ -16,7 +16,7 @@ Fitur lengkap:
 - Filter log per device
 """
 
-import asyncio, json, os, time, hashlib, secrets, csv, io
+import asyncio, json, os, time, hashlib, secrets, csv, io, random
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
@@ -50,6 +50,16 @@ LOGIN_LOCKOUT_SEC  = int(os.getenv("LOGIN_LOCKOUT_SEC",  "300"))
 RATE_LIMIT_RPM     = int(os.getenv("RATE_LIMIT_RPM",     "120"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
+
+# Instagram DM notification (Meta Instagram Messaging API)
+# Syarat resmi Meta: akun Instagram harus Professional, memakai access token yang benar,
+# dan recipient_id adalah IG Scoped ID / PSID dari user yang sudah pernah DM akun Anda.
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "")
+INSTAGRAM_RECIPIENT_ID = os.getenv("INSTAGRAM_RECIPIENT_ID", "")
+INSTAGRAM_ACCOUNT_ID   = os.getenv("INSTAGRAM_ACCOUNT_ID",   "")
+INSTAGRAM_API_VERSION  = os.getenv("INSTAGRAM_API_VERSION",  "v24.0")
+# Opsional jika endpoint Anda berbeda, misalnya lewat graph.instagram.com atau third-party gateway.
+INSTAGRAM_MESSAGES_URL = os.getenv("INSTAGRAM_MESSAGES_URL", "")
 # ============================================================
 
 def load_users():
@@ -70,7 +80,7 @@ def load_users():
 
 USERS = load_users()
 
-app = FastAPI(title="ESP32 Dashboard API", version="5.0.0",
+app = FastAPI(title="ESP32 Dashboard API", version="8.0.0",
               docs_url=None, redoc_url=None, openapi_url=None)
 
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
@@ -96,6 +106,20 @@ main_loop                = None
 _dirty                   = False
 rate_limit_store:  dict = {}
 login_attempts:    dict = {}
+
+# Simulator sensor untuk testing dashboard tanpa ESP fisik.
+simulator_state: dict = {
+    "running": False,
+    "device_id": "sim-sensor-01",
+    "name": "Simulasi Suhu & Humid",
+    "temp_base": 29.0,
+    "temp_variation": 3.0,
+    "humid_base": 62.0,
+    "humid_variation": 12.0,
+    "interval_sec": 2.0,
+    "started_at": None,
+    "uptime": 0,
+}
 
 def haversine(lat1, lon1, lat2, lon2) -> float:
     R = 6371000.0
@@ -143,9 +167,11 @@ def save_persistent_data(reason=""):
         clean = {}
         for dev_id,dev in devices.items():
             clean[dev_id]={k:v for k,v in dev.items() if k!="last_seen"}
+        clean_geofences = {k:{kk:vv for kk,vv in v.items() if not kk.startswith("_")} for k,v in geofences.items()}
+        clean_schedules = {k:{kk:vv for kk,vv in v.items() if not kk.startswith("_")} for k,v in schedules.items()}
         data = {"devices":clean,"device_pins":device_pins,
                 "gps_last_location":gps_last_location,"alert_config":alert_config,
-                "schedules":schedules,"geofences":geofences,
+                "schedules":clean_schedules,"geofences":clean_geofences,
                 "saved_at":datetime.now().isoformat(),"reason":reason}
         tmp = STORAGE_FILE+".tmp"
         with open(tmp,"w") as f: json.dump(data,f,indent=2)
@@ -166,19 +192,77 @@ def push_pin_config_to_device(device_id: str) -> bool:
     return ok
 
 # ============================================================
-# TELEGRAM
+# NOTIFICATIONS: TELEGRAM + INSTAGRAM
 # ============================================================
+def strip_html(text: str) -> str:
+    """Ubah pesan HTML sederhana dari Telegram menjadi teks biasa untuk Instagram."""
+    import re
+    text = text.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    text = re.sub(r"<[^>]+>", "", text)
+    return text.strip()
+
 async def send_telegram(msg: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return {"ok": False, "detail": "Telegram belum dikonfigurasi"}
     try:
         import urllib.request
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = json.dumps({"chat_id":TELEGRAM_CHAT_ID,"text":msg,"parse_mode":"HTML"}).encode()
         req  = urllib.request.Request(url,data=data,headers={"Content-Type":"application/json"})
-        urllib.request.urlopen(req,timeout=5)
+        with urllib.request.urlopen(req,timeout=10) as r:
+            body = r.read().decode("utf-8", "ignore")
         print(f"📱 Telegram: {msg[:50]}")
+        return {"ok": True, "response": body}
     except Exception as e:
         print(f"⚠ Telegram error: {e}")
+        return {"ok": False, "detail": str(e)}
+
+def instagram_endpoint() -> str:
+    if INSTAGRAM_MESSAGES_URL.strip():
+        return INSTAGRAM_MESSAGES_URL.strip()
+    if INSTAGRAM_ACCOUNT_ID.strip():
+        return f"https://graph.facebook.com/{INSTAGRAM_API_VERSION}/{INSTAGRAM_ACCOUNT_ID}/messages"
+    return f"https://graph.instagram.com/{INSTAGRAM_API_VERSION}/me/messages"
+
+async def send_instagram(msg: str):
+    """Kirim DM Instagram via Meta Messaging API.
+
+    Catatan: Instagram tidak bisa kirim DM bebas ke username biasa. Recipient harus berupa
+    IG Scoped ID/PSID dari user yang sudah pernah mengirim DM ke akun IG Professional Anda.
+    """
+    if not INSTAGRAM_ACCESS_TOKEN or not INSTAGRAM_RECIPIENT_ID:
+        return {"ok": False, "detail": "Instagram belum dikonfigurasi"}
+    try:
+        import urllib.request, urllib.error
+        text = strip_html(msg)[:950]
+        payload = {"recipient": {"id": INSTAGRAM_RECIPIENT_ID}, "message": {"text": text}}
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            instagram_endpoint(),
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {INSTAGRAM_ACCESS_TOKEN}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode("utf-8", "ignore")
+        print(f"📸 Instagram: {text[:50]}")
+        return {"ok": True, "response": body}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")
+        print(f"⚠ Instagram HTTP error: {detail}")
+        return {"ok": False, "detail": detail or str(e)}
+    except Exception as e:
+        print(f"⚠ Instagram error: {e}")
+        return {"ok": False, "detail": str(e)}
+
+async def send_notifications(msg: str):
+    """Kirim ke semua channel yang dikonfigurasi. Tidak menggagalkan proses jika salah satu channel error."""
+    tg = await send_telegram(msg)
+    ig = await send_instagram(msg)
+    return {"telegram": tg, "instagram": ig}
 
 # ============================================================
 # ALERTS
@@ -211,7 +295,7 @@ async def check_alerts(device_id: str, payload: dict):
 
     for msg in alerts_to_send:
         add_system_log(device_id, msg.replace("<b>","").replace("</b>",""), "warn")
-        await send_telegram(msg)
+        await send_notifications(msg)
         await broadcast_ws({"type":"alert","device_id":device_id,"message":msg,"timestamp":datetime.now().isoformat()})
 
 async def check_geofence(device_id: str, lat, lng):
@@ -230,14 +314,14 @@ async def check_geofence(device_id: str, lat, lng):
             alert_sent[key] = now
             msg = f"🚨 <b>GEOFENCE EXIT</b>\n{name} keluar area {gf.get('name','')}\nJarak: {dist:.0f}m dari pusat"
             add_system_log(device_id, f"Keluar geofence {gf.get('name','')} — jarak {dist:.0f}m", "warn")
-            await send_telegram(msg)
+            await send_notifications(msg)
             await broadcast_ws({"type":"geofence_exit","device_id":device_id,"distance":dist,"timestamp":datetime.now().isoformat()})
 
     if not gf.get("alert_on_exit") and not was_inside and inside:
         if time.time()-alert_sent.get(key+"_in",0) > 60:
             alert_sent[key+"_in"] = now
             msg = f"✅ <b>GEOFENCE ENTER</b>\n{name} masuk area {gf.get('name','')}"
-            await send_telegram(msg)
+            await send_notifications(msg)
 
 # ============================================================
 # SYSTEM LOG
@@ -256,6 +340,7 @@ async def scheduler_task():
         now = datetime.now()
         for sch_id, sch in schedules.items():
             if not sch.get("enabled",False): continue
+            if now.weekday() not in sch.get("days", [0,1,2,3,4,5,6]): continue
             if sch.get("cron_hour") != now.hour: continue
             if sch.get("cron_min")  != now.minute: continue
             # Cek apakah sudah dijalankan menit ini
@@ -303,6 +388,13 @@ class AddUserRequest(BaseModel):
     password: str
     role:     str = "viewer"
 
+class DeviceCreateRequest(BaseModel):
+    device_id:   str
+    name:        str
+    type:        str = "custom"
+    device_type: Optional[str] = None
+    chip:        Optional[str] = None
+
 class PinConfig(BaseModel):
     pin:   int
     name:  str
@@ -329,6 +421,15 @@ class ScheduleConfig(BaseModel):
     label:      str = ""
     enabled:    bool = True
     days:       List[int] = [0,1,2,3,4,5,6]  # 0=Senin
+
+class SimulatorConfig(BaseModel):
+    device_id:       str = "sim-sensor-01"
+    name:            str = "Simulasi Suhu & Humid"
+    temp_base:       float = 29.0
+    temp_variation:  float = 3.0
+    humid_base:      float = 62.0
+    humid_variation: float = 12.0
+    interval_sec:    float = 2.0
 
 class GeofenceConfig(BaseModel):
     lat:          float
@@ -473,11 +574,11 @@ def on_mqtt_message(client, userdata, msg):
                     print(f"⚡ Reconnect: {device_id}")
                     push_pin_config_to_device(device_id)
                     name=devices[device_id].get("name",device_id)
-                    schedule_coroutine(send_telegram(f"✅ <b>Device Online</b>\n{name} terhubung kembali"))
+                    schedule_coroutine(send_notifications(f"✅ <b>Device Online</b>\n{name} terhubung kembali"))
                     add_system_log(device_id,"Device online","ok")
             else:
                 name=devices.get(device_id,{}).get("name",device_id)
-                schedule_coroutine(send_telegram(f"⚠️ <b>Device Offline</b>\n{name} tidak merespons"))
+                schedule_coroutine(send_notifications(f"⚠️ <b>Device Offline</b>\n{name} tidak merespons"))
                 add_system_log(device_id,"Device offline","warn")
             mark_dirty()
 
@@ -552,6 +653,47 @@ async def auto_save_task():
             rate_limit_store[ip]=[t for t in rate_limit_store[ip] if now-t<60]
             if not rate_limit_store[ip]: del rate_limit_store[ip]
 
+async def simulator_task():
+    """Generate suhu dan humidity palsu untuk mengetes grafik dashboard tanpa ESP."""
+    phase = 0.0
+    while True:
+        interval = max(1.0, float(simulator_state.get("interval_sec", 2.0) or 2.0))
+        await asyncio.sleep(interval)
+        if not simulator_state.get("running"):
+            continue
+
+        phase += interval / 8.0
+        device_id = simulator_state.get("device_id") or "sim-sensor-01"
+        now_iso = datetime.now().isoformat()
+        simulator_state["uptime"] = int(time.time() - (simulator_state.get("started_at") or time.time()))
+
+        temp_base = float(simulator_state.get("temp_base", 29.0))
+        temp_var  = abs(float(simulator_state.get("temp_variation", 3.0)))
+        hum_base  = float(simulator_state.get("humid_base", 62.0))
+        hum_var   = abs(float(simulator_state.get("humid_variation", 12.0)))
+
+        temp = round(temp_base + sin(phase) * temp_var + random.uniform(-0.35, 0.35), 1)
+        hum  = round(max(0, min(100, hum_base + cos(phase * 0.7) * hum_var + random.uniform(-1.5, 1.5))), 1)
+        rssi = random.randint(-70, -42)
+        payload = {"temp": temp, "humidity": hum, "rssi": rssi, "uptime": simulator_state["uptime"]}
+
+        devices[device_id] = {
+            **devices.get(device_id, {}),
+            **payload,
+            "device_id": device_id,
+            "name": simulator_state.get("name") or "Simulasi Suhu & Humid",
+            "type": "sensor",
+            "device_type": "sensor",
+            "chip": "SIMULATOR",
+            "online": True,
+            "status": "online",
+            "simulated": True,
+            "last_seen": now_iso,
+        }
+        sensor_history[device_id].append({**payload, "time": now_iso})
+        await check_alerts(device_id, payload)
+        await broadcast_ws({"type":"sensor","device_id":device_id,"data":payload,"timestamp":now_iso,"simulated":True})
+
 @app.on_event("startup")
 async def startup():
     global main_loop
@@ -561,7 +703,8 @@ async def startup():
     asyncio.create_task(check_device_timeout())
     asyncio.create_task(auto_save_task())
     asyncio.create_task(scheduler_task())
-    print("🚀 ESP32 Dashboard API v5.0 ready")
+    asyncio.create_task(simulator_task())
+    print("🚀 ESP32 Dashboard API v8.0 ready")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -573,7 +716,7 @@ async def shutdown():
 # ============================================================
 
 @app.get("/health")
-async def health(): return {"status":"ok","version":"5.0.0"}
+async def health(): return {"status":"ok","version":"8.0.0"}
 
 # ---- AUTH ----
 @app.post("/api/login")
@@ -626,6 +769,29 @@ async def get_devices(session=Depends(get_session)):
         except: online=False
         result.append({**dev,"device_id":dev_id,"online":online})
     return result
+
+@app.post("/api/devices")
+async def create_device(req: DeviceCreateRequest, session=Depends(require_admin)):
+    device_id = req.device_id.strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Device ID wajib diisi")
+    if device_id in devices:
+        raise HTTPException(status_code=400, detail="Device ID sudah ada")
+    dtype = req.device_type or req.type
+    devices[device_id] = {
+        "name": req.name.strip() or device_id,
+        "type": req.type,
+        "device_type": dtype,
+        "chip": req.chip or "manual",
+        "status": "offline",
+        "online": False,
+        "created_at": datetime.now().isoformat(),
+    }
+    if device_id not in device_pins:
+        device_pins[device_id] = []
+    save_persistent_data(f"create device {device_id}")
+    await broadcast_ws({"type":"device_updated","device_id":device_id,"data":devices[device_id],"timestamp":datetime.now().isoformat()})
+    return {"message":"Device ditambahkan","device_id":device_id,"device":devices[device_id]}
 
 @app.get("/api/devices/{device_id}")
 async def get_device(device_id: str, session=Depends(get_session)):
@@ -704,6 +870,10 @@ async def get_pins(device_id: str, session=Depends(get_session)):
 
 @app.put("/api/devices/{device_id}/pins")
 async def update_pins(device_id: str, req: DevicePinsUpdate, session=Depends(require_admin)):
+    if len(req.pins) > 20:
+        raise HTTPException(status_code=400, detail="Maksimal 20 pin per device")
+    if device_id not in devices:
+        devices[device_id] = {"name":device_id,"type":"custom","device_type":"custom","status":"offline","online":False,"created_at":datetime.now().isoformat()}
     device_pins[device_id]=[p.dict() for p in req.pins]
     save_persistent_data(f"update pins {device_id}")
     pushed=push_pin_config_to_device(device_id)
@@ -750,6 +920,10 @@ async def send_command(req: CommandRequest, session=Depends(get_session)):
         for p in device_pins.get(req.device_id,[]):
             if p["pin"]==req.pin: p["state"]=req.state
         save_persistent_data(f"cmd relay GPIO{req.pin}={'ON' if req.state else 'OFF'} on {req.device_id}")
+    if req.action=="set_pwm" and req.pin is not None and req.value is not None:
+        for p in device_pins.get(req.device_id,[]):
+            if p["pin"]==req.pin: p["value"]=req.value
+        save_persistent_data(f"cmd value GPIO{req.pin}={req.value} on {req.device_id}")
     result=mqtt_client.publish(topic,json.dumps(payload))
     if result.rc!=mqtt.MQTT_ERR_SUCCESS:
         raise HTTPException(status_code=500,detail="Gagal kirim MQTT")
@@ -769,6 +943,63 @@ async def get_stats(session=Depends(get_session)):
     avg_t=round(sum(temps)/len(temps),1) if temps else 0
     gps_c=sum(1 for d in online_devs if d.get("device_type")=="gps_tracker")
     return {"total":total,"online":online,"offline":total-online,"avg_temp":avg_t,"gps_trackers":gps_c}
+
+# ---- SENSOR SIMULATOR ----
+@app.get("/api/simulator/status")
+async def simulator_status(session=Depends(get_session)):
+    return {**simulator_state}
+
+@app.post("/api/simulator/start")
+async def start_simulator(cfg: SimulatorConfig, session=Depends(require_admin)):
+    if not cfg.device_id.strip():
+        raise HTTPException(status_code=400, detail="Device ID simulasi wajib diisi")
+    if cfg.interval_sec < 1 or cfg.interval_sec > 60:
+        raise HTTPException(status_code=400, detail="Interval simulasi harus 1-60 detik")
+    simulator_state.update({
+        "running": True,
+        "device_id": cfg.device_id.strip(),
+        "name": cfg.name.strip() or "Simulasi Suhu & Humid",
+        "temp_base": cfg.temp_base,
+        "temp_variation": cfg.temp_variation,
+        "humid_base": cfg.humid_base,
+        "humid_variation": cfg.humid_variation,
+        "interval_sec": cfg.interval_sec,
+        "started_at": time.time(),
+        "uptime": 0,
+    })
+    device_id = simulator_state["device_id"]
+    now_iso = datetime.now().isoformat()
+    devices[device_id] = {
+        **devices.get(device_id, {}),
+        "device_id": device_id,
+        "name": simulator_state["name"],
+        "type": "sensor",
+        "device_type": "sensor",
+        "chip": "SIMULATOR",
+        "online": True,
+        "status": "online",
+        "simulated": True,
+        "last_seen": now_iso,
+        "temp": simulator_state["temp_base"],
+        "humidity": simulator_state["humid_base"],
+        "rssi": -55,
+        "uptime": 0,
+    }
+    add_system_log(device_id, "Simulator sensor dimulai", "ok")
+    await broadcast_ws({"type":"status","device_id":device_id,"data":devices[device_id],"timestamp":now_iso})
+    return {"message":"Simulator dimulai", **simulator_state}
+
+@app.post("/api/simulator/stop")
+async def stop_simulator(session=Depends(require_admin)):
+    simulator_state["running"] = False
+    device_id = simulator_state.get("device_id") or "sim-sensor-01"
+    if device_id in devices:
+        devices[device_id]["online"] = False
+        devices[device_id]["status"] = "offline"
+        devices[device_id]["last_seen"] = datetime.now().isoformat()
+    add_system_log(device_id, "Simulator sensor dihentikan", "warn")
+    await broadcast_ws({"type":"status","device_id":device_id,"data":devices.get(device_id,{"status":"offline"}),"timestamp":datetime.now().isoformat()})
+    return {"message":"Simulator dihentikan", **simulator_state}
 
 # ---- ALERTS ----
 @app.get("/api/devices/{device_id}/alert")
@@ -792,25 +1023,42 @@ async def delete_alert(device_id: str, session=Depends(require_admin)):
 async def get_schedules(session=Depends(get_session)):
     return [{"id":k,**{kk:vv for kk,vv in v.items() if not kk.startswith("_")}} for k,v in schedules.items()]
 
+def validate_schedule(cfg: ScheduleConfig):
+    if cfg.action not in ("on", "off"):
+        raise HTTPException(status_code=400, detail="Action jadwal harus 'on' atau 'off'")
+    if not (0 <= cfg.cron_hour <= 23) or not (0 <= cfg.cron_min <= 59):
+        raise HTTPException(status_code=400, detail="Jam/menit jadwal tidak valid")
+    if cfg.pin < 0 or cfg.pin > 39:
+        raise HTTPException(status_code=400, detail="GPIO pin tidak valid")
+    if not cfg.device_id:
+        raise HTTPException(status_code=400, detail="Device wajib dipilih")
+    if cfg.days and any((d < 0 or d > 6) for d in cfg.days):
+        raise HTTPException(status_code=400, detail="Hari aktif tidak valid")
+
 @app.post("/api/schedules")
 async def add_schedule(cfg: ScheduleConfig, session=Depends(require_admin)):
+    validate_schedule(cfg)
     sch_id=f"sch_{int(time.time())}_{secrets.token_hex(4)}"
     schedules[sch_id]={**cfg.dict(),"_last_run":""}
     save_persistent_data("add schedule")
+    await broadcast_ws({"type":"schedule_updated","schedule_id":sch_id,"timestamp":datetime.now().isoformat()})
     return {"message":"Jadwal ditambahkan","id":sch_id}
 
 @app.put("/api/schedules/{sch_id}")
 async def update_schedule(sch_id: str, cfg: ScheduleConfig, session=Depends(require_admin)):
     if sch_id not in schedules:
         raise HTTPException(status_code=404,detail="Jadwal tidak ditemukan")
+    validate_schedule(cfg)
     schedules[sch_id]={**cfg.dict(),"_last_run":schedules[sch_id].get("_last_run","")}
     save_persistent_data("update schedule")
+    await broadcast_ws({"type":"schedule_updated","schedule_id":sch_id,"timestamp":datetime.now().isoformat()})
     return {"message":"Jadwal diperbarui"}
 
 @app.delete("/api/schedules/{sch_id}")
 async def delete_schedule(sch_id: str, session=Depends(require_admin)):
     schedules.pop(sch_id,None)
     save_persistent_data("delete schedule")
+    await broadcast_ws({"type":"schedule_deleted","schedule_id":sch_id,"timestamp":datetime.now().isoformat()})
     return {"message":"Jadwal dihapus"}
 
 # ---- GEOFENCE ----
@@ -820,14 +1068,31 @@ async def get_geofence(device_id: str, session=Depends(get_session)):
 
 @app.put("/api/devices/{device_id}/geofence")
 async def set_geofence(device_id: str, cfg: GeofenceConfig, session=Depends(require_admin)):
-    geofences[device_id]={**cfg.dict(),"_inside":True}
+    if not (-90 <= cfg.lat <= 90):
+        raise HTTPException(status_code=400, detail="Latitude harus antara -90 sampai 90")
+    if not (-180 <= cfg.lng <= 180):
+        raise HTTPException(status_code=400, detail="Longitude harus antara -180 sampai 180")
+    if cfg.radius_m < 10 or cfg.radius_m > 10000:
+        raise HTTPException(status_code=400, detail="Radius harus 10 sampai 10000 meter")
+    data = cfg.dict()
+    # Status awal inside dihitung dari lokasi GPS terakhir jika ada, agar alert exit/enter lebih akurat.
+    loc = gps_last_location.get(device_id) or devices.get(device_id, {})
+    inside = True
+    if loc.get("lat") and loc.get("lng"):
+        try:
+            inside = haversine(cfg.lat, cfg.lng, float(loc.get("lat")), float(loc.get("lng"))) <= cfg.radius_m
+        except Exception:
+            inside = True
+    geofences[device_id] = {**data, "_inside": inside}
     save_persistent_data(f"geofence {device_id}")
-    return {"message":"Geofence disimpan","config":cfg.dict()}
+    await broadcast_ws({"type":"geofence_updated","device_id":device_id,"data":data,"timestamp":datetime.now().isoformat()})
+    return {"message":"Geofence disimpan","config":data}
 
 @app.delete("/api/devices/{device_id}/geofence")
 async def delete_geofence(device_id: str, session=Depends(require_admin)):
     geofences.pop(device_id,None)
     save_persistent_data(f"delete geofence {device_id}")
+    await broadcast_ws({"type":"geofence_deleted","device_id":device_id,"timestamp":datetime.now().isoformat()})
     return {"message":"Geofence dihapus"}
 
 # ---- LOGS ----
@@ -837,13 +1102,28 @@ async def get_logs(device_id: Optional[str]=None, limit: int=100, session=Depend
     if device_id: logs=[l for l in logs if l.get("device")==device_id]
     return logs[:limit]
 
-# ---- TELEGRAM TEST ----
+# ---- NOTIFICATION TEST ----
 @app.post("/api/telegram/test")
 async def test_telegram(session=Depends(require_admin)):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        raise HTTPException(status_code=400,detail="Telegram belum dikonfigurasi")
-    await send_telegram("🔔 <b>Test Notifikasi</b>\nESP32 Dashboard berfungsi dengan baik!")
-    return {"message":"Pesan tes dikirim ke Telegram"}
+    result = await send_telegram("🔔 <b>Test Notifikasi</b>\nESP32 Dashboard berfungsi dengan baik!")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("detail", "Telegram gagal"))
+    return {"message":"Pesan tes dikirim ke Telegram", "result": result}
+
+@app.post("/api/instagram/test")
+async def test_instagram(session=Depends(require_admin)):
+    result = await send_instagram("🔔 Test Notifikasi\nESP32 Dashboard berfungsi dengan baik!")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("detail", "Instagram gagal"))
+    return {"message":"Pesan tes dikirim ke Instagram", "result": result}
+
+@app.post("/api/notify/test")
+async def test_all_notifications(session=Depends(require_admin)):
+    result = await send_notifications("🔔 <b>Test Notifikasi</b>\nESP32 Dashboard berfungsi dengan baik!")
+    ok = any(v.get("ok") for v in result.values())
+    if not ok:
+        raise HTTPException(status_code=400, detail=result)
+    return {"message":"Test notifikasi diproses", "result": result}
 
 # ---- USERS ----
 @app.get("/api/users")
