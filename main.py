@@ -1,5 +1,5 @@
 """
-ESP32 Dashboard - FastAPI Backend v13.0
+ESP32 Dashboard - FastAPI Backend v14.0 PWA
 =======================================
 Fitur lengkap:
 - Persistent storage semua device + GPS
@@ -29,7 +29,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -1194,8 +1194,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str=""):
     finally:
         if websocket in active_ws: active_ws.remove(websocket)
 
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    return RedirectResponse(url="/index.html", status_code=307)
+
 try:
     app.mount("/",StaticFiles(directory="frontend",html=True),name="frontend")
-except:
-    @app.get("/")
-    async def root(): return {"status":"ok"}
+except Exception:
+    @app.get("/fallback", include_in_schema=False)
+    async def fallback_root(): return {"status":"ok","version":"14.0.0","pwa":True}
