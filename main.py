@@ -1,5 +1,5 @@
 """
-ESP32 Dashboard - FastAPI Backend v8.0
+ESP32 Dashboard - FastAPI Backend v13.0
 =======================================
 Fitur lengkap:
 - Persistent storage semua device + GPS
@@ -132,7 +132,7 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
 # PERSISTENT STORAGE
 # ============================================================
 def load_persistent_data():
-    global devices, device_pins, gps_last_location, alert_config, schedules, geofences
+    global devices, device_pins, gps_last_location, alert_config, schedules, geofences, sensor_history, gps_history
     if not Path(STORAGE_FILE).exists():
         print(f"📂 Storage baru: {STORAGE_FILE}"); return
     try:
@@ -144,13 +144,20 @@ def load_persistent_data():
         alert_config      = data.get("alert_config",{})
         schedules         = data.get("schedules",{})
         geofences         = data.get("geofences",{})
+        # Restore riwayat sensor/GPS agar grafik tidak hilang setelah server restart.
+        for dev_id, rows in data.get("sensor_history", {}).items():
+            if isinstance(rows, list):
+                sensor_history[dev_id] = deque(rows[-500:], maxlen=500)
+        for dev_id, rows in data.get("gps_history", {}).items():
+            if isinstance(rows, list):
+                gps_history[dev_id] = deque(rows[-500:], maxlen=500)
         # Pasang GPS terakhir ke devices
         for dev_id,loc in gps_last_location.items():
             if dev_id in devices:
                 devices[dev_id].update({"lat":loc.get("lat"),"lng":loc.get("lng"),
                     "speed":loc.get("speed",0),"altitude":loc.get("altitude",0),
                     "device_type":"gps_tracker","last_gps_time":loc.get("time","")})
-        print(f"✅ Restored: {len(devices)} devices, {len(schedules)} schedules, {len(geofences)} geofences")
+        print(f"✅ Restored: {len(devices)} devices, {len(schedules)} schedules, {len(geofences)} geofences, {sum(len(v) for v in sensor_history.values())} sensor points")
         for dev_id,pins in device_pins.items():
             relays=[p for p in pins if p.get("type")=="relay"]
             if relays:
@@ -169,9 +176,12 @@ def save_persistent_data(reason=""):
             clean[dev_id]={k:v for k,v in dev.items() if k!="last_seen"}
         clean_geofences = {k:{kk:vv for kk,vv in v.items() if not kk.startswith("_")} for k,v in geofences.items()}
         clean_schedules = {k:{kk:vv for kk,vv in v.items() if not kk.startswith("_")} for k,v in schedules.items()}
+        clean_sensor_history = {k:list(v)[-500:] for k,v in sensor_history.items() if v}
+        clean_gps_history    = {k:list(v)[-500:] for k,v in gps_history.items() if v}
         data = {"devices":clean,"device_pins":device_pins,
                 "gps_last_location":gps_last_location,"alert_config":alert_config,
                 "schedules":clean_schedules,"geofences":clean_geofences,
+                "sensor_history":clean_sensor_history,"gps_history":clean_gps_history,
                 "saved_at":datetime.now().isoformat(),"reason":reason}
         tmp = STORAGE_FILE+".tmp"
         with open(tmp,"w") as f: json.dump(data,f,indent=2)
@@ -585,6 +595,7 @@ def on_mqtt_message(client, userdata, msg):
         elif msg_type=="sensor":
             devices[device_id]={**devices.get(device_id,{}),**payload,"last_seen":now_iso,"online":True}
             sensor_history[device_id].append({**payload,"time":now_iso})
+            mark_dirty()
             schedule_coroutine(check_alerts(device_id, payload))
 
         elif msg_type=="gps":
@@ -691,6 +702,7 @@ async def simulator_task():
             "last_seen": now_iso,
         }
         sensor_history[device_id].append({**payload, "time": now_iso})
+        mark_dirty()
         await check_alerts(device_id, payload)
         await broadcast_ws({"type":"sensor","device_id":device_id,"data":payload,"timestamp":now_iso,"simulated":True})
 
@@ -1157,7 +1169,8 @@ async def get_storage_info(session=Depends(require_admin)):
         info.update({"size_kb":round(stat.st_size/1024,1),
             "modified":datetime.fromtimestamp(stat.st_mtime).isoformat(),
             "devices":len(devices),"pin_configs":len(device_pins),
-            "gps_locations":len(gps_last_location),"schedules":len(schedules)})
+            "gps_locations":len(gps_last_location),"schedules":len(schedules),
+            "sensor_points":sum(len(v) for v in sensor_history.values()),"gps_points":sum(len(v) for v in gps_history.values())})
     return info
 
 @app.post("/api/storage/save")
