@@ -1,5 +1,5 @@
 """
-ESP32 Dashboard - FastAPI Backend v14.0 PWA
+ESP32 Dashboard - FastAPI Backend v19.0 Grouped Notifications
 =======================================
 Fitur lengkap:
 - Persistent storage semua device + GPS
@@ -60,6 +60,12 @@ INSTAGRAM_ACCOUNT_ID   = os.getenv("INSTAGRAM_ACCOUNT_ID",   "")
 INSTAGRAM_API_VERSION  = os.getenv("INSTAGRAM_API_VERSION",  "v24.0")
 # Opsional jika endpoint Anda berbeda, misalnya lewat graph.instagram.com atau third-party gateway.
 INSTAGRAM_MESSAGES_URL = os.getenv("INSTAGRAM_MESSAGES_URL", "")
+
+# Grouping notifikasi: banyak alert/device dalam beberapa detik dikirim sebagai 1 pesan.
+# Set NOTIFY_GROUP_ENABLED=false jika ingin kembali ke mode pesan satu-satu.
+NOTIFY_GROUP_ENABLED = os.getenv("NOTIFY_GROUP_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+NOTIFY_GROUP_SECONDS = int(os.getenv("NOTIFY_GROUP_SECONDS", "10"))
+NOTIFY_GROUP_MAX_ITEMS = int(os.getenv("NOTIFY_GROUP_MAX_ITEMS", "20"))
 # ============================================================
 
 def load_users():
@@ -80,7 +86,7 @@ def load_users():
 
 USERS = load_users()
 
-app = FastAPI(title="ESP32 Dashboard API", version="18.0.0",
+app = FastAPI(title="ESP32 Dashboard API", version="19.0.0",
               docs_url=None, redoc_url=None, openapi_url=None)
 
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
@@ -110,7 +116,7 @@ login_attempts:    dict = {}
 # Simulator sensor untuk testing dashboard tanpa ESP fisik.
 simulator_state: dict = {
     "running": False,
-    "device_id": "sim-sensor-01",
+    "device_id": "SIMULASI",
     "name": "Simulasi Suhu & Humid",
     "temp_base": 29.0,
     "temp_variation": 3.0,
@@ -268,11 +274,76 @@ async def send_instagram(msg: str):
         print(f"⚠ Instagram error: {e}")
         return {"ok": False, "detail": str(e)}
 
-async def send_notifications(msg: str):
-    """Kirim ke semua channel yang dikonfigurasi. Tidak menggagalkan proses jika salah satu channel error."""
+# Buffer notifikasi untuk digabungkan menjadi satu pesan.
+notification_buffer: list = []
+notification_lock: Optional[asyncio.Lock] = None
+
+def build_grouped_notification(items: list) -> str:
+    """Buat pesan ringkasan agar banyak notifikasi dari beberapa device jadi satu pesan Telegram/Instagram."""
+    total = len(items)
+    stamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    lines = [
+        "🔔 <b>Ringkasan Notifikasi ESP32</b>",
+        f"{total} notifikasi dalam ±{NOTIFY_GROUP_SECONDS} detik",
+        f"Waktu: {stamp}",
+        ""
+    ]
+    for i, item in enumerate(items[:NOTIFY_GROUP_MAX_ITEMS], 1):
+        text = str(item.get("msg", "")).strip()
+        text = text.replace("\r", "")
+        lines.append(f"{i}. {text}")
+    if total > NOTIFY_GROUP_MAX_ITEMS:
+        lines.append(f"\n… dan {total - NOTIFY_GROUP_MAX_ITEMS} notifikasi lain.")
+    return "\n".join(lines)
+
+async def flush_grouped_notifications(reason: str = "timer"):
+    """Kirim semua notifikasi yang sedang menunggu sebagai satu pesan."""
+    global notification_buffer, notification_lock
+    if notification_lock is None:
+        notification_lock = asyncio.Lock()
+    async with notification_lock:
+        items = notification_buffer[:]
+        notification_buffer.clear()
+    if not items:
+        return {"telegram": {"ok": False, "detail": "Tidak ada notifikasi"}, "instagram": {"ok": False, "detail": "Tidak ada notifikasi"}}
+    msg = items[0]["msg"] if len(items) == 1 else build_grouped_notification(items)
     tg = await send_telegram(msg)
     ig = await send_instagram(msg)
-    return {"telegram": tg, "instagram": ig}
+    print(f"🔔 Notification batch sent: {len(items)} item(s), reason={reason}")
+    return {"telegram": tg, "instagram": ig, "count": len(items), "reason": reason}
+
+async def notification_batch_task():
+    """Background task: kumpulkan notifikasi beberapa detik lalu kirim satu pesan."""
+    while True:
+        await asyncio.sleep(max(3, NOTIFY_GROUP_SECONDS))
+        try:
+            await flush_grouped_notifications("timer")
+        except Exception as e:
+            print(f"⚠ Notification batch error: {e}")
+
+async def send_notifications(msg: str, immediate: bool = False):
+    """
+    Kirim notifikasi.
+    Default: masuk buffer dulu supaya banyak alert dari beberapa device menjadi satu pesan.
+    immediate=True dipakai untuk tombol test agar langsung terkirim.
+    """
+    if immediate or not NOTIFY_GROUP_ENABLED:
+        tg = await send_telegram(msg)
+        ig = await send_instagram(msg)
+        return {"telegram": tg, "instagram": ig, "queued": False}
+
+    global notification_buffer, notification_lock
+    if notification_lock is None:
+        notification_lock = asyncio.Lock()
+    async with notification_lock:
+        notification_buffer.append({"time": datetime.now().isoformat(), "msg": msg})
+        count = len(notification_buffer)
+
+    # Kalau sangat banyak notifikasi, flush lebih cepat agar tidak menumpuk.
+    if count >= NOTIFY_GROUP_MAX_ITEMS:
+        asyncio.create_task(flush_grouped_notifications("max_items"))
+
+    return {"telegram": {"ok": True, "queued": True}, "instagram": {"ok": True, "queued": True}, "queued": True, "count": count}
 
 # ============================================================
 # ALERTS
@@ -730,7 +801,8 @@ async def startup():
     asyncio.create_task(auto_save_task())
     asyncio.create_task(scheduler_task())
     asyncio.create_task(simulator_task())
-    print("🚀 ESP32 Dashboard API v8.0 ready")
+    asyncio.create_task(notification_batch_task())
+    print("🚀 ESP32 Dashboard API v19.0 ready")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -742,7 +814,7 @@ async def shutdown():
 # ============================================================
 
 @app.get("/health")
-async def health(): return {"status":"ok","version":"18.0.0"}
+async def health(): return {"status":"ok","version":"19.0.0"}
 
 # ---- AUTH ----
 @app.post("/api/login")
@@ -1200,7 +1272,7 @@ async def test_instagram(session=Depends(require_admin)):
 
 @app.post("/api/notify/test")
 async def test_all_notifications(session=Depends(require_admin)):
-    result = await send_notifications("🔔 <b>Test Notifikasi</b>\nESP32 Dashboard berfungsi dengan baik!")
+    result = await send_notifications("🔔 <b>Test Notifikasi</b>\nESP32 Dashboard berfungsi dengan baik!", immediate=True)
     ok = any(v.get("ok") for v in result.values())
     if not ok:
         raise HTTPException(status_code=400, detail=result)
@@ -1271,4 +1343,4 @@ try:
     app.mount("/",StaticFiles(directory="frontend",html=True),name="frontend")
 except Exception:
     @app.get("/fallback", include_in_schema=False)
-    async def fallback_root(): return {"status":"ok","version":"18.0.0","pwa":True}
+    async def fallback_root(): return {"status":"ok","version":"19.0.0","pwa":True}
