@@ -80,7 +80,7 @@ def load_users():
 
 USERS = load_users()
 
-app = FastAPI(title="ESP32 Dashboard API", version="8.0.0",
+app = FastAPI(title="ESP32 Dashboard API", version="18.0.0",
               docs_url=None, redoc_url=None, openapi_url=None)
 
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
@@ -441,6 +441,20 @@ class SimulatorConfig(BaseModel):
     humid_variation: float = 12.0
     interval_sec:    float = 2.0
 
+class PhoneGPSPush(BaseModel):
+    device_id: str = "phone-gps-01"
+    name:      str = "GPS HP Saya"
+    lat:       float
+    lng:       float
+    speed:     Optional[float] = 0.0      # km/h dari frontend
+    altitude:  Optional[float] = 0.0
+    accuracy:  Optional[float] = None
+    heading:   Optional[float] = None
+    time:      Optional[str] = None
+
+class PhoneGPSStop(BaseModel):
+    device_id: str = "phone-gps-01"
+
 class GeofenceConfig(BaseModel):
     lat:          float
     lng:          float
@@ -728,7 +742,7 @@ async def shutdown():
 # ============================================================
 
 @app.get("/health")
-async def health(): return {"status":"ok","version":"8.0.0"}
+async def health(): return {"status":"ok","version":"18.0.0"}
 
 # ---- AUTH ----
 @app.post("/api/login")
@@ -1013,6 +1027,61 @@ async def stop_simulator(session=Depends(require_admin)):
     await broadcast_ws({"type":"status","device_id":device_id,"data":devices.get(device_id,{"status":"offline"}),"timestamp":datetime.now().isoformat()})
     return {"message":"Simulator dihentikan", **simulator_state}
 
+# ---- PHONE GPS SIMULATOR ----
+@app.post("/api/simulator/gps/push")
+async def push_phone_gps(req: PhoneGPSPush, session=Depends(require_admin)):
+    """Terima lokasi GPS dari browser HP dan tampilkan sebagai tracker GPS virtual."""
+    device_id = (req.device_id or "phone-gps-01").strip()
+    name = (req.name or "GPS HP Saya").strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Device ID GPS HP wajib diisi")
+    if req.lat < -90 or req.lat > 90 or req.lng < -180 or req.lng > 180:
+        raise HTTPException(status_code=400, detail="Koordinat GPS tidak valid")
+    now_iso = datetime.now().isoformat()
+    gps_time = req.time or now_iso
+    payload = {
+        "lat": round(float(req.lat), 7),
+        "lng": round(float(req.lng), 7),
+        "speed": round(float(req.speed or 0), 2),
+        "altitude": round(float(req.altitude or 0), 2),
+        "accuracy": None if req.accuracy is None else round(float(req.accuracy), 1),
+        "heading": req.heading,
+        "time": gps_time,
+        "source": "phone_gps",
+    }
+    devices[device_id] = {
+        **devices.get(device_id, {}),
+        **payload,
+        "device_id": device_id,
+        "name": name,
+        "type": "gps_tracker",
+        "device_type": "gps_tracker",
+        "chip": "PHONE-GPS",
+        "online": True,
+        "status": "online",
+        "simulated": True,
+        "last_seen": now_iso,
+        "last_gps_time": gps_time,
+    }
+    gps_last_location[device_id] = {**payload, "time": gps_time}
+    gps_history[device_id].append({**payload, "time": gps_time})
+    mark_dirty()
+    await check_geofence(device_id, payload["lat"], payload["lng"])
+    await broadcast_ws({"type":"gps","device_id":device_id,"data":payload,"timestamp":now_iso,"simulated":True})
+    return {"message":"GPS HP diterima", "device":devices[device_id]}
+
+@app.post("/api/simulator/gps/stop")
+async def stop_phone_gps(req: PhoneGPSStop, session=Depends(require_admin)):
+    device_id=(req.device_id or "phone-gps-01").strip()
+    now_iso=datetime.now().isoformat()
+    if device_id in devices:
+        devices[device_id]["online"] = False
+        devices[device_id]["status"] = "offline"
+        devices[device_id]["last_seen"] = now_iso
+    add_system_log(device_id, "GPS HP dihentikan", "warn")
+    await broadcast_ws({"type":"status","device_id":device_id,"data":devices.get(device_id,{"status":"offline"}),"timestamp":now_iso})
+    return {"message":"GPS HP dihentikan", "device_id":device_id}
+
 # ---- ALERTS ----
 @app.get("/api/devices/{device_id}/alert")
 async def get_alert(device_id: str, session=Depends(get_session)):
@@ -1202,4 +1271,4 @@ try:
     app.mount("/",StaticFiles(directory="frontend",html=True),name="frontend")
 except Exception:
     @app.get("/fallback", include_in_schema=False)
-    async def fallback_root(): return {"status":"ok","version":"14.0.0","pwa":True}
+    async def fallback_root(): return {"status":"ok","version":"18.0.0","pwa":True}
